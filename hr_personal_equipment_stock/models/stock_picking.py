@@ -17,7 +17,7 @@ class StockPicking(models.Model):
             for move in self.move_ids_without_package:
                 if move.state == "done":
                     request_lines = self.equipment_request_id.sudo().line_ids.filtered(
-                        lambda x: x.product_id == move.product_id
+                        lambda x, move=move: x.product_id == move.product_id
                     )
                     for line in request_lines:
                         qty_initial = line.product_uom_id._compute_quantity(
