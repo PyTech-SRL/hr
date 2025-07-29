@@ -29,6 +29,7 @@ class HrPersonalEquipment(models.Model):
         "stock.move", "personal_equipment_id", string="Stock Moves"
     )
     skip_procurement = fields.Boolean(compute="_compute_skip_procurement")
+    lot_ids = fields.Many2many("stock.lot", related="move_ids.lot_ids")
 
     @api.depends("state", "product_id", "product_id.type")
     def _compute_skip_procurement(self):
