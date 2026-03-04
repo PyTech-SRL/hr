@@ -30,6 +30,9 @@ class HrPersonalEquipment(models.Model):
         "stock.move", "personal_equipment_id", string="Stock Moves"
     )
     skip_procurement = fields.Boolean(compute="_compute_skip_procurement")
+    lot_ids = fields.Many2many(
+        "stock.lot", compute="_compute_lot_ids", string="Serial Numbers"
+    )
 
     @api.depends("state", "product_id", "product_id.type")
     def _compute_skip_procurement(self):
@@ -52,6 +55,55 @@ class HrPersonalEquipment(models.Model):
                     move.product_uom_qty, line.product_uom_id
                 )
             line.qty_delivered = qty
+
+    @api.depends(
+        "move_ids.lot_ids",
+    )
+    def _compute_lot_ids(self):
+        for line in self:
+            available_lot_ids = {}
+            returned_move_ids = line.move_ids.filtered(
+                lambda x: x.product_id == line.product_id
+                and x.quantity_done
+                and x.origin_returned_move_id
+            )
+            moves_to_be_checked = line.move_ids - returned_move_ids
+            for move_id in moves_to_be_checked:
+                if move_id.lot_ids:
+                    lot_infos = self.env["stock.quant"].read_group(
+                        domain=[
+                            ("product_id", "=", line.product_id.id),
+                            ("location_id", "child_of", line.location_id.id),
+                            ("lot_id", "in", move_id.lot_ids.ids),
+                        ],
+                        fields=["lot_id", "quantity: sum"],
+                        groupby=["lot_id"],
+                    )
+                    available_lot_ids.update(
+                        {
+                            lot_info["lot_id"][0]: lot_info["quantity"]
+                            for lot_info in lot_infos
+                            if lot_info["lot_id"]
+                            and lot_info["quantity"] not in (0.0, -1.0)
+                        }
+                    )
+            lot_ids = available_lot_ids.keys()
+            if lot_ids:
+                returned_lots = returned_move_ids.mapped("lot_ids")
+                actual_move_lots = moves_to_be_checked.mapped("lot_ids")
+                # Remove returned lots from available lots in location
+                # when same lot_id  used in different PPE request
+                if len(returned_move_ids) and (
+                    len(returned_lots) != len(actual_move_lots)
+                ):
+                    lot_ids = [
+                        x
+                        for x in available_lot_ids.keys()
+                        if x not in returned_move_ids.mapped("lot_ids").ids
+                    ]
+                line.lot_ids = [(6, 0, lot_ids)]
+            else:
+                line.lot_ids = False
 
     def _skip_procurement(self):
         return self.product_id.type not in ("consu", "product")
