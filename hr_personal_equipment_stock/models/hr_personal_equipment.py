@@ -30,6 +30,9 @@ class HrPersonalEquipment(models.Model):
         "stock.move", "personal_equipment_id", string="Stock Moves"
     )
     skip_procurement = fields.Boolean(compute="_compute_skip_procurement")
+    lot_ids = fields.Many2many(
+        "stock.lot", compute="_compute_lot_ids", string="Serial Numbers"
+    )
 
     @api.depends("state", "product_id", "product_id.type")
     def _compute_skip_procurement(self):
@@ -52,6 +55,55 @@ class HrPersonalEquipment(models.Model):
                     move.product_uom_qty, line.product_uom_id
                 )
             line.qty_delivered = qty
+
+    def _fetch_lot_ids_with_qty_available_from_dest_loc(self, product_id, location_id):
+        lot_infos = self.env["stock.quant"].read_group(
+            domain=[
+                ("product_id", "=", product_id.id),
+                ("location_id", "child_of", location_id.id),
+            ],
+            fields=["lot_id", "quantity: sum"],
+            groupby=["lot_id"],
+        )
+        available_lot_ids = {
+            lot_info["lot_id"][0]: lot_info["quantity"]
+            for lot_info in lot_infos
+            if lot_info["lot_id"]
+        }
+        return available_lot_ids
+
+    @api.depends("move_ids.lot_ids")
+    def _compute_lot_ids(self):
+        for line in self:
+            if line.move_ids.lot_ids:
+                available_lot_ids = (
+                    self._fetch_lot_ids_with_qty_available_from_dest_loc(
+                        line.product_id, line.location_id
+                    )
+                )
+                move_lot_ids = line.move_ids.mapped("lot_ids")
+                # When duplication/return of picking happens
+                # more than one move_ids are available
+                if len(move_lot_ids) > 1:
+                    line.lot_ids = [
+                        (
+                            6,
+                            0,
+                            [
+                                lot_id.id
+                                for lot_id in move_lot_ids
+                                if available_lot_ids.get(lot_id.id, False)
+                            ],
+                        )
+                    ]
+                else:
+                    # when more than one lot_id available for same product
+                    lot_ids = set(line.move_ids.mapped("lot_ids").ids) & set(
+                        available_lot_ids.keys()
+                    )
+                    line.lot_ids = [(6, 0, [lot_id for lot_id in lot_ids])]
+            else:
+                line.lot_ids = False
 
     def _skip_procurement(self):
         return self.product_id.type not in ("consu", "product")
