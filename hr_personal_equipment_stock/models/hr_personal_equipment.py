@@ -44,16 +44,99 @@ class HrPersonalEquipment(models.Model):
         "move_ids.scrapped",
         "move_ids.product_uom_qty",
         "move_ids.product_uom",
+        "equipment_request_id.picking_ids.move_ids.scrapped",
     )
     def _compute_qty_delivered(self):
         for line in self:
             qty = 0.0
-            for move in line.move_ids.filtered(
-                lambda r: r.state == "done" and line.product_id == r.product_id
-            ):
-                qty += move.product_uom._compute_quantity(
-                    move.product_uom_qty, line.product_uom_id
+            if line.product_id.tracking == "none" and len(line.move_ids.lot_ids) == 0:
+                move_ids_to_be_processed = (
+                    line.equipment_request_id.picking_ids.filtered(
+                        lambda x: x.state != "done"
+                    ).move_ids
                 )
+                move_ids = line.move_ids.filtered(
+                    lambda x: x.product_id == line.product_id
+                    and x.quantity_done
+                    and not x.origin_returned_move_id
+                )
+                returned_move_ids = line.move_ids.filtered(
+                    lambda x: x.product_id == line.product_id
+                    and x.quantity_done
+                    and x.origin_returned_move_id
+                ).sorted("create_date")
+                scrapped_move_ids = (
+                    line.equipment_request_id.picking_ids.move_ids.filtered(
+                        lambda x: x.scrapped
+                    )
+                ).sorted("create_date")
+                move_ids = move_ids - scrapped_move_ids
+                if move_ids:
+                    if len(move_ids) == 1 and (
+                        not returned_move_ids and not scrapped_move_ids
+                    ):
+                        line.qty_delivered = move_ids.quantity_done
+                    # check for duplication moves and use latest one
+                    elif len(move_ids) > 1 and (
+                        returned_move_ids and not scrapped_move_ids
+                    ):
+                        move_ids = move_ids.sorted("create_date")
+                        line.qty_delivered = move_ids[-1].quantity_done
+                    else:
+                        if returned_move_ids:
+                            returned_move_ids = returned_move_ids.sorted("create_date")
+                            if not move_ids_to_be_processed or (
+                                move_ids_to_be_processed
+                                and (returned_move_ids in move_ids_to_be_processed)
+                            ):
+                                line.qty_delivered = (
+                                    line.qty_delivered
+                                    - returned_move_ids[-1].quantity_done
+                                )
+                            elif scrapped_move_ids:
+                                if scrapped_move_ids in move_ids_to_be_processed:
+                                    line.qty_delivered = (
+                                        line.qty_delivered
+                                        - scrapped_move_ids[-1].quantity_done
+                                    )
+                continue
+            # Filter scrapped move_ids
+            scrapped_lot_ids = line.equipment_request_id.picking_ids.move_ids.filtered(
+                lambda x: x.scrapped
+            ).lot_ids
+            if scrapped_lot_ids:
+                line.lot_ids = line.lot_ids.filtered(
+                    lambda x: x not in scrapped_lot_ids
+                )
+            lot_ids_qty_info = {
+                lot_id.id: self.env["stock.quant"]._get_available_quantity(
+                    line.product_id,
+                    line.location_id,
+                    lot_id,
+                )
+                for lot_id in line.lot_ids
+            }
+            # Filter moves which are moved to PPE location
+            moves_to_be_checked = line.move_ids.filtered(
+                lambda r: r.state == "done"
+                and line.product_id == r.product_id
+                and r.location_dest_id == line.location_id
+                and not r.origin_returned_move_id
+                and r.lot_ids not in scrapped_lot_ids
+            )
+            # check and remove moves with same lots
+            # if same lots exists among filtered moves
+            lots_to_be_filtered = self.env["stock.move"]
+            for lot in moves_to_be_checked.mapped("lot_ids"):
+                move_with_same_lots = moves_to_be_checked.filtered(
+                    lambda x: lot in x.lot_ids
+                )
+                if len(move_with_same_lots) > 1:
+                    lot_records = move_with_same_lots.sorted("create_date")
+                    lots_to_be_filtered |= lot_records[:-1]
+            moves_to_be_checked -= lots_to_be_filtered
+            for move in moves_to_be_checked:
+                qty += sum([lot_ids_qty_info.get(lot.id, 0) for lot in move.lot_ids])
             line.qty_delivered = qty
 
     @api.depends(
