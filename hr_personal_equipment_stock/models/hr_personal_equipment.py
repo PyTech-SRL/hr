@@ -33,6 +33,7 @@ class HrPersonalEquipment(models.Model):
     lot_ids = fields.Many2many(
         "stock.lot", compute="_compute_lot_ids", string="Serial Numbers"
     )
+    scrap_ids = fields.One2many("stock.scrap", "personal_equipment_id", "Scraps")
 
     @api.depends("state", "product_id", "product_id.type")
     def _compute_skip_procurement(self):
@@ -44,16 +45,29 @@ class HrPersonalEquipment(models.Model):
         "move_ids.scrapped",
         "move_ids.product_uom_qty",
         "move_ids.product_uom",
+        "scrap_ids.move_id.scrapped",
     )
     def _compute_qty_delivered(self):
         for line in self:
             qty = 0.0
-            for move in line.move_ids.filtered(
-                lambda r: r.state == "done" and line.product_id == r.product_id
-            ):
-                qty += move.product_uom._compute_quantity(
-                    move.product_uom_qty, line.product_uom_id
+            lot_ids_qty_info = {
+                lot_id.id: self.env["stock.quant"]._get_available_quantity(
+                    line.product_id,
+                    line.location_id,
+                    lot_id,
                 )
+                for lot_id in line.lot_ids
+            }
+            moves_to_be_checked = (
+                line.move_ids.filtered(
+                    lambda r: r.state == "done"
+                    and line.product_id == r.product_id
+                    and not r.origin_returned_move_id
+                )
+                + line.scrap_ids.move_id
+            )
+            for move in moves_to_be_checked:
+                qty += sum([lot_ids_qty_info.get(lot.id, 0) for lot in move.lot_ids])
             line.qty_delivered = qty
 
     def _fetch_lot_ids_with_qty_available_from_dest_loc(self, product_id, location_id):
