@@ -44,14 +44,21 @@ class HrPersonalEquipment(models.Model):
         "move_ids.scrapped",
         "move_ids.product_uom_qty",
         "move_ids.product_uom",
+        "equipment_request_id.picking_ids.move_ids.scrapped",
+        "equipment_request_id.picking_ids.move_ids.state",
     )
     def _compute_qty_delivered(self):
         for line in self:
             qty = 0.0
             dest_location = line.location_id
-            for move in line.move_ids.filtered(
+            moves = line.move_ids.filtered(
                 lambda move: move.state == "done" and move.product_id == line.product_id
-            ):
+            ) + line.equipment_request_id.picking_ids.move_ids.filtered(
+                lambda move: move.scrapped
+                and move.state == "done"
+                and move.product_id == line.product_id
+            )
+            for move in moves:
                 moved_qty = move.quantity_done
                 if move.location_dest_id == dest_location:
                     qty += moved_qty
@@ -61,14 +68,21 @@ class HrPersonalEquipment(models.Model):
 
     @api.depends(
         "move_ids.lot_ids",
+        "equipment_request_id.picking_ids.move_ids.scrapped",
+        "equipment_request_id.picking_ids.move_ids.state",
     )
     def _compute_lot_ids(self):
         for line in self:
             qty_by_lot = {}
             dest_location = line.location_id
-            for move in line.move_ids.filtered(
+            moves = line.move_ids.filtered(
                 lambda move: move.state == "done" and move.product_id == line.product_id
-            ):
+            ) + line.equipment_request_id.picking_ids.move_ids.filtered(
+                lambda move: move.scrapped
+                and move.state == "done"
+                and move.product_id == line.product_id
+            )
+            for move in moves:
                 for move_line in move.move_line_ids:
                     lot = move_line.lot_id
                     if lot not in qty_by_lot:
